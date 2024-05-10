@@ -11,12 +11,12 @@ use serial::prelude::*;
 
 fn main() -> std::io::Result<()> {
     display_ports();
-    
+
     println!("Hello, world!");
     let port = serialport::new("/dev/ttyUSB0", 115_200)//TODO: check 115_200--- what baud should i use ??
         .timeout(Duration::from_millis(15))
         .open().expect("Failed to open port");
-
+git 
     println!("Port opened");
 
     Ok(())
