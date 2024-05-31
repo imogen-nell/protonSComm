@@ -1,8 +1,9 @@
 use std::time::Duration;
 use std::thread::sleep;
-
+// use simple_logger::SimpleLogger;
 use protonSComm::port::Port;
 
+//TODO: whats w a l the &
 const VEL_1000: &[u8] = &[0xF0,0xF0,0x09,0x18,0xFC,0x00,0x00,0x00,0x00,0x00,0xBE,0x56];
 const STOP: &[u8] = &[0xF0,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3E,0x31];
 const BAUD: u32 = 230400;
@@ -14,29 +15,26 @@ const ENABLE_A_VEL: &[u8] = &[0xF0,0xF0,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 
 
 
-//a in tor : byte 2 = 00000001 = 0x01
-//a in vel : byte 2 = 00001001 = 0x09
-//a in pos : byte 2 = 00010001 = 0x11
+
 
 fn main() {
-    let mut myPort = Port::new("/dev/ttyUSB0".to_string(), BAUD);
+    // SimpleLogger::new().env().init().unwrap();
 
-    // println!("calculated crc: {:X?}", Port::checksum(ENABLE_A_POS));
-    // println!("{}",&Port::verify_crc(ENABLE_A_POS));
+    // let mut myPort = Port::new("/dev/ttyUSB0".to_string(), BAUD);
+    // myPort.write_cmd(DISABLE_A);
+    // sleep(Duration::from_millis(50));
+    //0 is torque, 1 is velocity
+    let cmd = Port::create_command("amps", -1.4);
+    println!("{:X?}", cmd);
 
-    //display ports:
+    let cmd2 = Port::create_command_long(0, false, -1.4);
+    println!("{:X?}", cmd2);
+    // myPort.write_cmd(&cmd);
 
-    myPort.write_cmd(DISABLE_A);
-    // // myPort.write_cmd(ENABLE_A_TOR);
-    // myPort.write_cmd(ENABLE_A_VEL);
-    while true{
-        std::thread::sleep(Duration::from_millis(50));
-        myPort.get_interpret_resp();
-        // myPort.write_cmd(VEL_1000);
-        //print speed:
-        println!("Speed: {}", myPort.get_feedback());
-    }
-
-
+    // while true{
+    //     std::thread::sleep(Duration::from_millis(50));
+    //     myPort.get_interpret_resp();
+    //     println!("current: {}", myPort.get_feedback());
+    // }
 
 }

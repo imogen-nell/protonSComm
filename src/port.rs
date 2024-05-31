@@ -10,7 +10,8 @@ use log::{info, warn, error};
 const HEADER: [u8;2] = [0xF0, 0xF0];
 const C_SCALE: f32 = 0.001;
 const V_SCALE: f32 = 1.0;
-const SCALE: [f32; 2] = [C_SCALE, V_SCALE];
+const P_SCALE: f32 = 0.001; //TODO fix this val
+const SCALE: [f32; 3] = [C_SCALE, V_SCALE, P_SCALE];
 const MOTORS: [char; 2] = ['A', 'B'];
 const ERRORS: [&str; 11] = ["Error Conditon", "Over Current", 
 "Loss of Feedback", "Over Speed", "Motor Temp", "IGBTTemp", 
@@ -129,13 +130,15 @@ impl Port {
         expected == calculated
     }
 
+    //reads the response from the port (motor)
+    //used by get_interpret_resp()
     fn read_resp(&mut self)-> Vec<u8> {
         let mut serial_buf: Vec<u8> = vec![0; 12];
         self.port.read(serial_buf.as_mut_slice()).expect("Read failed");
         serial_buf
     }
 
-    //reads the response from the port (motor) then updates : feedback, motor_enabled, mode
+    //reads the response from the port (motor) and then updates : feedback, motor_enabled, mode
     pub fn get_interpret_resp(&mut self) {
         //get response, exctract status packet
         let mut serial_buf: Vec<u8> = self.read_resp();
@@ -177,6 +180,10 @@ impl Port {
 
     }
 
+    //checks which motor is enabled, if any
+    //Arguments: packet: u8 - byte 0 of the status packet (contains the motor enabled info)
+    //updates motor_enabled: Option<char> - true: motor A, false: motor B, None: no motor enabled
+    //exoect: True or None only 
     fn check_motor_enabled(&mut self, packet: u8){
         if ((packet & 0b00000011) as usize) == 1 || ((packet & 0b00000011) as usize) == 2  {
             self.motor_enabled = MOTORS.get(((packet & 0b00000011) as usize)-1).cloned();
@@ -186,6 +193,8 @@ impl Port {
     }
 
     //TODO: what to do w the errors????
+    //checks the errors in the status packet
+    //Arguments: status: &[u8] - the (whole) status packet
     fn error_check(&self, status: &[u8]) {
         //errors in byte 5 bit 0:6 incl., byte 0 bit 3
         let errs = (status[5] & 0b1111110) | ((status[0]& 0b00001000)>>3);
@@ -201,6 +210,88 @@ impl Port {
         }
 
     }
+
+    //creates a command which enables motor a
+    //Arguments: mode: u16 - the mode to enable the motor in (0: torque, 1: velocity, 2: position)
+    //clear_errs: bool - true if errors should be cleared, false otherwise
+    //Returns: [u8;12] - the 12 byte command to enable motor a
+    pub fn create_command_long(mode: usize, clear_errs: bool, value: f32)-> [u8;12]{
+        let mut cmd = vec![0xF0,0xF0];
+        //byte 2
+        let mut com_mode = 0b00000001 + (mode <<3);
+        if clear_errs {com_mode = com_mode | 0b00000101};
+        cmd.push(com_mode as u8);
+        //byte 3 -4
+        let val = ((value / SCALE[mode] ) as i16).to_le_bytes();
+        cmd.push(val[0]);
+        cmd.push(val[1]);
+        //byte 5-9 for motor b and reserved
+        for _ in 0..5{
+            cmd.push(0x00);
+        }
+        //crc
+        let crc = Port::checksum(&cmd[..]).to_be_bytes();
+        cmd.push(crc[0]);
+        cmd.push(crc[1]);
+
+        let mut ret = [0;12];
+        ret.copy_from_slice(&cmd);
+        if !Self::verify_crc(&ret){log::error!("Checksum is not correct");return [0;12];}
+
+        ret
+    }
+
+    //creates a command which enables motor a, doesnt clear errors 
+    //Arguments: mode: u16 - the mode to enable the motor in 
+    //Arguments: value: f32 - the value of Amps if in current mode, or RPM if in velocity mode
+    //Returns: [u8;12] - the 12 byte command corresponding to your mode and value
+    pub fn create_command(mode: &str, value : f32)-> [u8;12]{
+        let mut cmd = vec![0xF0,0xF0];
+        //byte 2
+        let mut com_mode = 0b00000001;
+        let mut i = 0;
+        match mode {
+            "c" =>          com_mode = 0b00000001,
+            "current" =>    com_mode = 0b00000001,
+            "torque" =>     com_mode = 0b00000001,
+            "amps" =>       com_mode = 0b00000001,
+
+            "velocity" =>  {com_mode = 0b00001001; i = 1},
+            "rpm" =>       {com_mode = 0b00001001; i = 1},
+            "v" =>         {com_mode = 0b00001001; i = 1},
+
+            //"position" =>   com_mode = 0b00010001, dont use this 
+            _ => log::error!("Invalid mode"),
+        }
+        cmd.push(com_mode as u8);
+        //byte 3 -4
+        let val = ((value / SCALE[i] ) as i16).to_le_bytes();
+        cmd.push(val[0]);
+        cmd.push(val[1]);
+        //byte 5-9 for motor b and reserved
+        for _ in 0..5{
+            cmd.push(0x00);
+        }
+        //crc
+        let crc = Port::checksum(&cmd[..]).to_be_bytes();
+        cmd.push(crc[0]);
+        cmd.push(crc[1]);
+
+        let mut ret = [0;12];
+        ret.copy_from_slice(&cmd);
+        if !Self::verify_crc(&ret){log::error!("Checksum is not correct");return [0;12];}
+
+        ret
+    }
+
+    //self.feedback = ((((status_packet[2] as i16) << 8) | (status_packet[1] as i16) )as f32 )*  SCALE[self.mode as usize] as f32;
+
+    //a in tor : byte 2 = 00000001 = 0x01 - 1
+    //a in vel : byte 2 = 00001001 = 0x09 - 9 
+    //a in pos : byte 2 = 00010001 = 0x11 - 17
+
+    //a in tor w clear errs : byte 2 = 00000101 = 0x05 - 5
+
 
 
 }
