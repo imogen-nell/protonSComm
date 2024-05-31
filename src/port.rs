@@ -81,17 +81,6 @@ impl Port {
         self.feedback
     }
 
-    // pub fn write_cmd(&self, cmd: &[u8]) {
-    //     self.write_all(cmd).expect("Write failed");
-    // }
-
-    // pub fn read(&self) {
-    //     let mut serial_buf: Vec<u8> = vec![0; 32];
-    //     port.read(serial_buf.as_mut_slice()).expect("Read failed");
-
-    //     println!("{:?}", serial_buf);
-    // }
-
     //will diplay available ports if needed
     pub fn display_ports() {
         let ports = serialport::available_ports().expect("No ports found!");
@@ -146,7 +135,7 @@ impl Port {
 
         //HEADER
         if HEADER != serial_buf[0..2] {
-            println!("Header does not match");
+            log::warn!("Header does not match");
 
             //wait for header to collect data
             let mut next: Vec<u8> = vec![0; 2];
@@ -166,7 +155,7 @@ impl Port {
         
         //CRC
         if !Port::verify_crc(&serial_buf) {
-            println!("Checksum does not match");
+            log::warn!("Checksum does not match");
             return
         }
 
@@ -202,10 +191,10 @@ impl Port {
         let other_errs = status[0] & 0b01110000;
         for i in 0..8 {
             if ((errs & (1<<i))>>i) == 1 {
-                println!("Error: {}", ERRORS[i]);
+                log::error!("Error: {}", ERRORS[i]);
             }
             if ((other_errs & (1<<i))>>i) == 1 {
-                println!("Error: {}", ERRORS[i+4]);
+                log::error!("Error: {}", ERRORS[i+4]);
             }
         }
 

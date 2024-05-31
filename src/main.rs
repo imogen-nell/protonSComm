@@ -28,10 +28,10 @@ fn main() {
         println!("Speed: {}", myPort.get_feedback());
         std::thread::sleep(Duration::from_millis(3000));
         
-        myPort.write_cmd(DISABLE_A);
-        myPort.get_interpret_resp();
-        println!("Speed: {}", myPort.get_feedback());
-        std::thread::sleep(Duration::from_millis(3000));
+        // myPort.write_cmd(DISABLE_A);
+        // myPort.get_interpret_resp();
+        // println!("Speed: {}", myPort.get_feedback());
+        // std::thread::sleep(Duration::from_millis(3000));
 
     }
 
