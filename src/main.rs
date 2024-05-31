@@ -1,47 +1,42 @@
-extern crate serial;
-
-use std::env;
-use std::io;
 use std::time::Duration;
-use serial::SerialPort;
+use std::thread::sleep;
 
-use serial::prelude::*;
-//use serial::io::prelude::*;
+use protonSComm::port::Port;
+
+const VEL_1000: &[u8] = &[0xF0,0xF0,0x09,0x18,0xFC,0x00,0x00,0x00,0x00,0x00,0xBE,0x56];
+const STOP: &[u8] = &[0xF0,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3E,0x31];
+const BAUD: u32 = 230400;
+const ENABLE_A: &[u8] = &[0xF0,0xF0,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xED,0x76];
+const DISABLE_A: &[u8] = &[0xF0,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3E,0x31];
+const ENABLE_A_POS: &[u8] = &[0xF0,0xF0,0x11,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x59,0x4B]; ///enable a in velocity mode
+const ENABLE_A_TOR: &[u8] = &[0xF0,0xF0,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xED,0x76]; ///enable a in torque mode
+const ENABLE_A_VEL: &[u8] = &[0xF0,0xF0,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x37,0x68]; ///enable a in position
 
 
-fn main() -> std::io::Result<()> {
-    display_ports();
 
-    println!("Hello, world!");
-    let port = serialport::new("/dev/ttyUSB0", 115_200)//TODO: check 115_200--- what baud should i use ??
-        .timeout(Duration::from_millis(15))
-        .open().expect("Failed to open port");
-git 
-    println!("Port opened");
+//a in tor : byte 2 = 00000001 = 0x01
+//a in vel : byte 2 = 00001001 = 0x09
+//a in pos : byte 2 = 00010001 = 0x11
 
-    Ok(())
+fn main() {
+    let mut myPort = Port::new("/dev/ttyUSB0".to_string(), BAUD);
 
-}
+    // println!("calculated crc: {:X?}", Port::checksum(ENABLE_A_POS));
+    // println!("{}",&Port::verify_crc(ENABLE_A_POS));
 
-//funciton to write to port:
-fn write_to_port(port: &mut dyn serialport::SerialPort) {
-    let output = "test".as_bytes();
-    port.write(output).expect("Write failed");
-}
+    //display ports:
 
-//function to read from port:
-fn read_from_port(port: &mut dyn serialport::SerialPort) {
-    let mut serial_buf: Vec<u8> = vec![0; 32];
-    port.read(serial_buf.as_mut_slice()).expect("Read failed");
-
-    println!("{:?}", serial_buf);
-}
-
-//lists available ports:
-fn display_ports() {
-    let ports = serialport::available_ports().expect("No ports found!");
-
-    for p in ports {
-        println!("{:?}", p.port_name);
+    myPort.write_cmd(DISABLE_A);
+    // // myPort.write_cmd(ENABLE_A_TOR);
+    // myPort.write_cmd(ENABLE_A_VEL);
+    while true{
+        std::thread::sleep(Duration::from_millis(50));
+        myPort.get_interpret_resp();
+        // myPort.write_cmd(VEL_1000);
+        //print speed:
+        println!("Speed: {}", myPort.get_feedback());
     }
+
+
+
 }
