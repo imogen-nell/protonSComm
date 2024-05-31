@@ -1,9 +1,10 @@
 use std::time::Duration;
 use std::thread::sleep;
 use protonSComm::port::Port;
+use simple_logger::SimpleLogger;
 
 //TODO: whats w a l the &
-const VEL_1000: &[u8] = &[0xF0,0xF0,0x09,0x18,0xFC,0x00,0x00,0x00,0x00,0x00,0xBE,0x56];
+const VEL_NEGATIVE_1000: &[u8] = &[0xF0,0xF0,0x09,0x18,0xFC,0x00,0x00,0x00,0x00,0x00,0xBE,0x56];
 const STOP: &[u8] = &[0xF0,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3E,0x31];
 const BAUD: u32 = 230400;
 const ENABLE_A: &[u8] = &[0xF0,0xF0,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xED,0x76];
@@ -20,20 +21,18 @@ fn main() {
     let mut myPort = Port::new("/dev/ttyUSB0".to_string(), BAUD);
     SimpleLogger::new().init().unwrap();
 
-    // println!("calculated crc: {:X?}", Port::checksum(ENABLE_A_POS));
-    // println!("{}",&Port::verify_crc(ENABLE_A_POS));
-
-    //display ports:
-
-    myPort.write_cmd(DISABLE_A);
-    // // myPort.write_cmd(ENABLE_A_TOR);
-    // myPort.write_cmd(ENABLE_A_VEL);
+    sleep(Duration::from_millis(500));
     while true{
-        std::thread::sleep(Duration::from_millis(50));
+        myPort.write_cmd(VEL_NEGATIVE_1000);
         myPort.get_interpret_resp();
-        // myPort.write_cmd(VEL_1000);
-        //print speed:
         println!("Speed: {}", myPort.get_feedback());
+        std::thread::sleep(Duration::from_millis(3000));
+        
+        myPort.write_cmd(DISABLE_A);
+        myPort.get_interpret_resp();
+        println!("Speed: {}", myPort.get_feedback());
+        std::thread::sleep(Duration::from_millis(3000));
+
     }
 
 
