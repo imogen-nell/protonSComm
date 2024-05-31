@@ -1,6 +1,5 @@
 use std::time::Duration;
 use std::thread::sleep;
-
 use protonSComm::port::Port;
 
 //TODO: whats w a l the &
@@ -19,6 +18,7 @@ const ENABLE_A_VEL: &[u8] = &[0xF0,0xF0,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 
 fn main() {
     let mut myPort = Port::new("/dev/ttyUSB0".to_string(), BAUD);
+    SimpleLogger::new().init().unwrap();
 
     // println!("calculated crc: {:X?}", Port::checksum(ENABLE_A_POS));
     // println!("{}",&Port::verify_crc(ENABLE_A_POS));
