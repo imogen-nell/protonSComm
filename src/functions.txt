@@ -1,0 +1,171 @@
+//will diplay available ports if needed
+    pub fn display_ports() {
+        let ports = serialport::available_ports().expect("No ports found!");
+
+        for p in ports {
+            println!("{:?}", p.port_name);
+        }
+    }
+
+
+
+
+
+
+    //checks which motor is enabled, if any
+    //Arguments: packet: u8 - byte 0 of the status packet (contains the motor enabled info)
+    //updates motor_enabled: Option<char> - true: motor A, false: motor B, None: no motor enabled
+    //exoect: True or None only 
+    fn check_motor_enabled(&mut self, packet: u8){
+        if ((packet & 0b00000011) as usize) == 1 || ((packet & 0b00000011) as usize) == 2  {
+            self.motor_enabled = MOTORS.get(((packet & 0b00000011) as usize)-1).cloned();
+        }else{
+            self.motor_enabled = None;
+        }
+    }
+
+
+
+
+   //creates a command which enables motor a
+    //Arguments: mode: u16 - the mode to enable the motor in (0: torque, 1: velocity, 2: position)
+    //clear_errs: bool - true if errors should be cleared, false otherwise
+    //Returns: [u8;12] - the 12 byte command to enable motor a
+    pub fn create_command_long(mode: usize, clear_errs: bool, value: f32)-> [u8;12]{
+        let mut cmd = vec![0xF0,0xF0];
+        //byte 2
+        let mut com_mode = 0b00000001 + (mode <<3);
+        if clear_errs {com_mode = com_mode | 0b00000101};
+        cmd.push(com_mode as u8);
+        //byte 3 -4
+        let val = ((value / SCALE[mode] ) as i16).to_le_bytes();
+        cmd.push(val[0]);
+        cmd.push(val[1]);
+        //byte 5-9 for motor b and reserved
+        for _ in 0..5{
+            cmd.push(0x00);
+        }
+        //crc
+        let crc = Controller::checksum(&cmd[..]).to_be_bytes();
+        cmd.push(crc[0]);
+        cmd.push(crc[1]);
+
+        let mut ret = [0;12];
+        ret.copy_from_slice(&cmd);
+        if !Self::verify_crc(&ret){log::error!("Checksum is not correct");return [0;12];}
+
+        ret
+    }
+
+ 
+
+    //a in tor : byte 2 = 00000001 = 0x01 - 1
+    //a in vel : byte 2 = 00001001 = 0x09 - 9 
+    //a in pos : byte 2 = 00010001 = 0x11 - 17
+
+    //a in tor w clear errs : byte 2 = 00000101 = 0x05 - 5
+
+
+    //sends a command to the port and waits untill the correct response is received at least 3 times
+    //Arguments: cmd: &[u8] - the 12 byte current command to be sent inc. header & crc
+    pub fn write_and_verify(&mut self, cmd: &[u8]) {
+        let mut buffer = 0.50; //current uncertainty
+        let mode = (cmd[2] & 0b00011000)>>3;
+        let target = ((((cmd[4] as i16) << 8) | (cmd[3] as i16) )as f32 )*  SCALE[mode as usize] as f32;
+        self.port.write(cmd);
+        //exctract the target value from the command given
+        let mut count = 0;
+        log::info!("target: {}", target);
+        while count < 2 {
+            self.update_feedback();
+            if self.feedback < target + buffer && self.feedback > target - buffer{
+                count += 1;
+            }
+            self.port.write(cmd);
+            log::info!("feedback: {}", self.feedback);
+        }
+    }
+
+    ///reads the response from the port (motor)
+    ///returns: feedback value
+    ///feedback units: Amps, RPM for Torque/Current and Velocity modes respectively
+    pub fn get_data(&mut self) -> data{
+        //read response from port/motor
+        let mut serial_buf: Vec<u8> = self.read_resp();
+
+        //Verify HEADER, wait for correct header if not
+        if HEADER != serial_buf[0..2] {
+            log::warn!("Header does not match");
+            serial_buf = self.force_correct_header();
+        }
+
+        let mut status_packet = &serial_buf[2..9]; 
+        //Check for errors, and CRC
+        self.error_check(status_packet);
+        if !Controller::verify_crc(&serial_buf) {
+            log::warn!("Checksum does not match");
+            return data { feedback: 0.0, }
+        }
+
+        //Exctract feedback from status packet
+        let mode = (status_packet[0] & 0b00011000)>>3;
+        let feedback = ((((status_packet[2] as i16) << 8) | (status_packet[1] as i16) )as f32 )*  SCALE[mode as usize] as f32;
+        // let motor_enabled = Controller::is_motor_enabled(status_packet[0]);
+        data {
+            feedback: feedback,
+        }
+
+    }
+
+    //waits for correct header, then reads the status packet from the port
+    //returns: Vec<u8> - the status packet including the header
+    fn force_correct_header(&mut self) -> Vec<u8> {
+        let mut temp_head: Vec<u8> = vec![0; 2];
+        //read next 2 bytes 
+        self.port.read_exact(&mut temp_head).expect("Read failed");
+        //wait for correct header
+        // log::info!("Waiting for correct header");
+        while temp_head!= HEADER {
+            self.port.read_exact(&mut temp_head).expect("Read failed");
+            // log::info!("packet: {:x?}", temp_head);
+        }
+        //read the last 10 bytes after correct header is gotten
+        let mut temp_status: Vec<u8> = vec![0; 10];
+        self.port.read_exact(&mut temp_status).expect("Read failed");
+        //combine the header and status in order, store in serial_buf
+        temp_head.extend_from_slice(&temp_status);
+        temp_head
+    }
+
+   //reads the response from the port (motor) and then updates feedback
+    pub fn update_feedback(&mut self) {
+        let mut serial_buf: Vec<u8> = self.read_resp();
+        
+        //HEADER
+        if HEADER != serial_buf[0..2] {
+            log::warn!("Header does not match");
+            serial_buf = self.force_correct_header();
+        }
+
+        let mut status_packet = &serial_buf[2..9]; 
+        self.error_check(status_packet);
+        
+        //CRC
+        if !Controller::verify_crc(&serial_buf) {
+            log::warn!("Checksum does not match");
+            return
+        }
+
+        let mode = (status_packet[0] & 0b00011000)>>3;
+        self.feedback = ((((status_packet[2] as i16) << 8) | (status_packet[1] as i16) )as f32 )*  SCALE[mode as usize] as f32;
+    }
+
+    //reads the response from the port (motor)
+    //used by update_feedback()
+    fn read_resp(&mut self)-> Vec<u8> {
+        let mut serial_buf: Vec<u8> = vec![0; 12];
+        // self.port.read(serial_buf.as_mut_slice()).expect("Read failed");
+        //reads exactly 12 bytes from the port
+        self.port.read_exact(&mut serial_buf).expect("Read failed");
+        serial_buf
+    }

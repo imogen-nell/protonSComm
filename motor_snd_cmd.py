@@ -6,15 +6,17 @@ import time
 
 ser = serial.Serial(
     port = '/dev/ttyUSB0', 
-    baudrate=9600,
+    baudrate=230400,
     parity=serial.PARITY_NONE,
     stopbits=serial.STOPBITS_ONE,
     bytesize=serial.EIGHTBITS,
     xonxoff=False
 )
 
-data   = [0xF0,0xF0,0x09,0x18,0xFC,0x00,0x00,0x00,0x00,0x00,0xBE,0x56]
-data2 = b'\x0F\x0F\x09\x18\xFC\x00\x00\x00\x00\x00\xBE\x56'
+DISABLE   = [0xF0,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3E,0x31]
+data = [0x56, 0xBE, 0x00, 0x00, 0x00, 0x00, 0xFC, 0x18, 0x09, 0xF0, 0xF0]
+VEL_NEGATIVE_1000 = [0xF0,0xF0,0x09,0x18,0xFC,0x00,0x00,0x00,0x00,0x00,0xBE,0x56]
+
 def interpret_cmd(cmd):
     feedback = ['Current', 'Velocity', 'Position']
     header = cmd[0:2]
@@ -30,16 +32,15 @@ def interpret_cmd(cmd):
 try:
     if not ser.is_open:
         ser.open()
-
-    while True:
-        ser.write(data)
-        # for byte in data:
-        #     ser.write(byte)
-        ##sleep for 10 milliseconds
-        time.sleep(.001)
-        status = ser.read(12)
-        interpret_cmd(status)
-        print(status)
+    ser.write(DISABLE)
+    # while True:
+    #     ser.write(DISABLE)
+    #     # for byte in data:
+    #     #     ser.write(byte)
+    #     time.sleep(.100)
+    #     status = ser.read(12)
+    #     interpret_cmd(status)
+    #     # print(status)
 
 
 except Exception as e:

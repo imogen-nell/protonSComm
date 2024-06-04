@@ -1,21 +1,29 @@
 use serialport::SerialPort;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::thread::sleep;
+use std::thread;
 use std::error::Error;
 use std::io::{self, Write};
+use cadh::threadsync::DualChannelSync;
 use serial::prelude::*;
-// use simple_logger::SimpleLogger;
+use crossbeam;
 use log::{info, warn, error};
 
-const HEADER: [u8;2] = [0xF0, 0xF0];
-const C_SCALE: f32 = 0.001;
-const V_SCALE: f32 = 1.0;
-const P_SCALE: f32 = 0.001; //TODO fix this val
-const SCALE: [f32; 3] = [C_SCALE, V_SCALE, P_SCALE];
-const MOTORS: [char; 2] = ['A', 'B'];
-const ERRORS: [&str; 11] = ["Error Conditon", "Over Current", 
+//frequency of commands being excecuted : 1/SLEEP = 200Hz
+const RATED_CURRENT     : f32 = 3.45; // [units] = A //change based on motor
+const TORQUE_CONSTANT   : f32 = 0.036; // [units]  = Nm/A //change based on motor 
+const SLEEP             : f64 = 0.005;//in seconds, 5ms
+const HEADER            : [u8;2] = [0xF0, 0xF0];
+const HEAD              : [u8;1] = [0xF0];
+const C_SCALE           : f32 = 0.001; 
+const V_SCALE           : f32 = 1.0;
+const P_SCALE           : f32 = 0.0; //never use this 
+const SCALE             : [f32; 3] = [C_SCALE, V_SCALE, P_SCALE];
+const ERRORS            : [&str; 11] = [ "Over Current", 
 "Loss of Feedback", "Over Speed", "Motor Temp", "IGBTTemp", 
-"I2T", "Bridge Fault", "Over Voltage", "Under Voltage", "Precharge V"];
+"I2T", "Bridge Fault", "Error Conditon", "Over Voltage", "Under Voltage", "Precharge V"];
+
+const DISABLE: &[u8] = &[0xF0,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3E,0x31];
 
 const CRC16_TABLE: [u16; 256]= [0x0000,0x1021,0x2042,0x3063,0x4084,0x50a5,0x60c6,0x70e7,
 0x8108,0x9129,0xa14a,0xb16b,0xc18c,0xd1ad,0xe1ce,0xf1ef,
@@ -50,57 +58,135 @@ const CRC16_TABLE: [u16; 256]= [0x0000,0x1021,0x2042,0x3063,0x4084,0x50a5,0x60c6
 0xef1f,0xff3e,0xcf5d,0xdf7c,0xaf9b,0xbfba,0x8fd9,0x9ff8,
 0x6e17,0x7e36,0x4e55,0x5e74,0x2e93,0x3eb2,0x0ed1,0x1ef0];
 
-pub struct Port {
-    name: Option<String>,
-    baud: Option<u32>,
-    port: Box<dyn SerialPort>,
-    mode: u8,
-    feedback: f32,
-    motor_enabled: Option<char>,
-    
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+pub struct ControllerThread {
+    pub inner: DualChannelSync<cmd, data>,
 }
 
-impl Port {
-    pub fn new(name: String, baud: u32) -> Self {
-        let mut new_port = serialport::new(name, baud)
-        .timeout(Duration::from_millis(10))
-        .open().expect("Failed to open port");
+pub struct Controller{
+    port: Box<dyn SerialPort>,
+    feedback: f32,
+    state: readstate,
+    status: [u8; 10],
+    //to add when the other packets are defined
+    // 042C serialFeedbackEnable
+    // 042D serialBaud
+    // 042F serialFeedbackRate
+    // 0430 serialChecksumErrorCOunt
+    // 0431 serialPassCount
+    // 0432 serialCharactersReceived
+    // 0433 serialNumReportedErrors
 
-        let mut p = Port {
-            name: None,
-            baud: None,
-            port: new_port,
-            mode: 0,
+}
+
+#[derive(Debug)]
+#[derive(PartialEq)]
+pub enum readstate{
+    Lost,
+    Header,
+    StatusPacket,
+    Crc,
+    Read,
+}
+
+pub enum cmd{
+    SetTorque(f32),
+    SetVelocity(f32),
+    SetCurrent(f32),
+    DisableMotor(),
+}
+
+#[derive(Debug)]
+pub struct data{
+    pub feedback: f32,
+}
+
+impl ControllerThread {
+
+    pub fn spawn_feedback_thread(port_name: String, baud: u32) -> Result<Self> {
+
+        let handle = DualChannelSync::spawn(
+
+            "Feedback Updater",
+            
+            move |to_main: _, from_main: _| {
+            
+                log::info!("Feedback thread started!");
+                //initialize controller, give ownership to the thread
+                let mut controller = Controller::new(port_name, baud).expect("Failed to open port");
+                //setup timing
+                let interval = Duration::from_secs_f64(SLEEP);
+                let mut next_update = Instant::now() + interval;
+
+                loop {
+                    //check for commands from main, and excecute
+                    if from_main.len() > 10 {log::warn!("{} commands in queue", from_main.len());}
+                    for cmd in from_main.try_iter() {                        
+                        match cmd {
+                            cmd::SetTorque(torque) => { ControllerThread::set_torque(&mut controller, torque);}
+                            cmd::SetVelocity(velocity) => { ControllerThread::set_velocity(&mut controller, velocity);}
+                            cmd::SetCurrent(current) => { ControllerThread::set_current(&mut controller, current);}
+                            cmd::DisableMotor() => { controller.port.write(DISABLE);}
+                        }
+                        //wait appropriate time
+                        if (std::time::Instant::now())  > next_update {next_update = Instant::now() + interval ;}
+                        sleep(next_update-Instant::now());
+                        next_update += interval;
+
+                    }
+
+                    controller.change_state();
+                    //populate data struct
+                    // log::debug!("state: {:?}", controller.state);
+                    let data = data { feedback: controller.feedback};
+                    //send data to main
+                    if let Err(e) = to_main.send(data) {
+                        log::warn!("failed to send data: {}", e);
+                    }        
+                                
+                }
+            })?;
+
+            Ok(ControllerThread {
+                inner: handle,
+            })
+    }
+
+    fn set_torque(controller: &mut Controller, torque: f32) {
+        let mut current = torque / TORQUE_CONSTANT;
+        if current > RATED_CURRENT {current = RATED_CURRENT;}
+        controller.port.write(&Controller::create_command("torque", current));
+    }
+
+    fn set_velocity(controller: &mut Controller, velocity: f32) {
+        controller.port.write(&Controller::create_command("velocity", velocity));
+    }
+
+    fn set_current(controller: &mut Controller, current: f32) {
+        controller.port.write(&Controller::create_command("current", current));
+    }
+
+}
+
+impl Controller {
+    //creates and opens serial port, return controller
+    pub fn new(port_name: String, baud: u32) -> Result<Self> {
+        let ser_port = serialport::new(port_name, baud)
+            .timeout(Duration::from_millis(1000))
+            .open()?;
+        Ok( Controller {
+            port: ser_port,
             feedback: 0.0,
-            motor_enabled: None,
-        };
-        p
+            state: readstate::Lost,
+            status: [0; 10],
+        })
     }
-
-    pub fn get_feedback(&self) -> f32 {
-        self.feedback
-    }
-
-    //will diplay available ports if needed
-    pub fn display_ports() {
-        let ports = serialport::available_ports().expect("No ports found!");
-
-        for p in ports {
-            println!("{:?}", p.port_name);
-        }
-    }
-
-    //sends a command to the port (motor)
-    //Arguments: cmd: &[u8] - the 12 byte command to be sent inc. header & crc
-    pub fn write_cmd(&mut self, cmd: &[u8]) {
-        self.mode = (cmd[2] & 0b00011000)>>3;
-        self.port.write(cmd);
-    }
-
-    //calculates the checksum for the command
-    //Arguments: cmd: &[u8] - the byte command inc. the header, may includ the crc or not 
+     
+    //calculates the checksum for the given packet
+    //Arguments: cmd: &[u8] - the byte packet including the header, may include the crc or not 
     //Returns: u16 - the calculated checksum in the order it should appear in the command send 
-    pub fn checksum(cmd: &[u8]) -> u16 {
+    fn checksum(cmd: &[u8]) -> u16 {
         let msg = &cmd[2..10];
         let mut crc16: u16 = 0xFFFF; // initial value FFFF always
         for &byte in msg{
@@ -111,134 +197,86 @@ impl Port {
     }
 
     //verifies the checksum of a command received or to send
-    //Arguments: cmd: &[u8] - the byte command inc. the header and the crc 
+    //Arguments: cmd: &[u8] - the 12 byte command inclusing the header and the crc 
     //Returns: bool - true if the checksum is correct, false otherwise
-    pub fn verify_crc(cmd: &[u8]) -> bool {
+    fn verify_crc(cmd: &[u8]) -> bool {
         let expected = &cmd[10..12];
-        let calculated = Port::checksum(&cmd).to_be_bytes();
+        let calculated = Controller::checksum(&cmd).to_be_bytes();
         expected == calculated
     }
 
-    //reads the response from the port (motor)
-    //used by get_interpret_resp()
-    fn read_resp(&mut self)-> Vec<u8> {
-        let mut serial_buf: Vec<u8> = vec![0; 12];
-        self.port.read(serial_buf.as_mut_slice()).expect("Read failed");
-        serial_buf
-    }
-
-    //reads the response from the port (motor) and then updates : feedback, motor_enabled, mode
-    pub fn get_interpret_resp(&mut self) {
-        //get response, exctract status packet
-        let mut serial_buf: Vec<u8> = self.read_resp();
-        let status_packet = &serial_buf[2..9]; //inclusive of 2, exclusive of 9
-
-        //HEADER
-        if HEADER != serial_buf[0..2] {
-            log::warn!("Header does not match");
-
-            //wait for header to collect data
-            let mut next: Vec<u8> = vec![0; 2];
-            self.port.read_exact(&mut next).expect("Read failed");
-            while next!= HEADER {
-                //waiting
-                self.port.read_exact(&mut next).expect("Read failed");
-                sleep(Duration::from_millis(10));
+    //read 1 byte -> decided what to do dep. on curr state
+    //read byte: read byte, change state, put byte in right place
+    //read msg calls RB untill in final state
+    pub fn change_state(&mut self) {
+        match self.state{
+            readstate::Lost => {
+                //find one header byte
+                let check: bool = self.find_header();
+                if check {self.state = readstate::Header;}
+                else {self.state = readstate::Lost;}
             }
-            let mut small_buf: Vec<u8> = vec![0; 10];
-            self.port.read_exact(&mut small_buf).expect("Read failed");
-            next.extend_from_slice(&small_buf);
-            
-        }
-        //error check , pass the whole status pack 
-        self.error_check(status_packet);
-        
-        //CRC
-        if !Port::verify_crc(&serial_buf) {
-            log::warn!("Checksum does not match");
-            return
-        }
+            readstate::Header => {
+                //find second header byte
+                let byte = self.next_byte();
+                if byte == HEAD  {self.state = readstate::StatusPacket;}
+                else {self.state = readstate::Lost;}
 
-        //BODY
-    
-        //find out which motor is enabled, if any, pass byte 0 of statuspack to check
-        self.check_motor_enabled(status_packet[0]);
-
-        //find the rmp if in velocity mode, current if in torque mode
-        self.feedback = ((((status_packet[2] as i16) << 8) | (status_packet[1] as i16) )as f32 )*  SCALE[self.mode as usize] as f32;
-
-    }
-
-    //checks which motor is enabled, if any
-    //Arguments: packet: u8 - byte 0 of the status packet (contains the motor enabled info)
-    //updates motor_enabled: Option<char> - true: motor A, false: motor B, None: no motor enabled
-    //exoect: True or None only 
-    fn check_motor_enabled(&mut self, packet: u8){
-        if ((packet & 0b00000011) as usize) == 1 || ((packet & 0b00000011) as usize) == 2  {
-            self.motor_enabled = MOTORS.get(((packet & 0b00000011) as usize)-1).cloned();
-        }else{
-            self.motor_enabled = None;
-        }
-    }
-
-    //TODO: what to do w the errors????
-    //checks the errors in the status packet
-    //Arguments: status: &[u8] - the (whole) status packet
-    fn error_check(&self, status: &[u8]) {
-        //errors in byte 5 bit 0:6 incl., byte 0 bit 3
-        let errs = (status[5] & 0b1111110) | ((status[0]& 0b00001000)>>3);
-        //some errors in byte 0 bits 4-6 inc.
-        let other_errs = status[0] & 0b01110000;
-        for i in 0..8 {
-            if ((errs & (1<<i))>>i) == 1 {
-                log::error!("Error: {}", ERRORS[i]);
             }
-            if ((other_errs & (1<<i))>>i) == 1 {
-                log::error!("Error: {}", ERRORS[i+4]);
+            readstate::StatusPacket => {
+                //get status packet
+                let mut status_packet: Vec<u8> = vec![0; 10];
+                self.port.read_exact(&mut status_packet).expect("Read failed");
+                self.status = status_packet.try_into().unwrap();//as_slice();
+                self.state = readstate::Crc;
+            }
+            readstate::Crc => {
+                //verify crc
+                let mut pack = vec![0xF0, 0xF0];
+                pack.extend(&self.status);
+                if Controller::verify_crc(&pack[..]) {self.state = readstate::Read;}
+                else {log::warn!("Checksum does not match, back to Lost"); self.state = readstate::Lost;}
+            }
+            readstate::Read => {
+                //update feedback
+                let mode = (self.status[0] & 0b00011000)>>3;
+                self.feedback = ((((self.status[2] as i16) << 8) | (self.status[1] as i16) )as f32 )*  SCALE[mode as usize] as f32;
+                self.state = readstate::Lost;
             }
         }
-
     }
 
-    //creates a command which enables motor a
-    //Arguments: mode: u16 - the mode to enable the motor in (0: torque, 1: velocity, 2: position)
-    //clear_errs: bool - true if errors should be cleared, false otherwise
-    //Returns: [u8;12] - the 12 byte command to enable motor a
-    pub fn create_command_long(mode: usize, clear_errs: bool, value: f32)-> [u8;12]{
-        let mut cmd = vec![0xF0,0xF0];
-        //byte 2
-        let mut com_mode = 0b00000001 + (mode <<3);
-        if clear_errs {com_mode = com_mode | 0b00000101};
-        cmd.push(com_mode as u8);
-        //byte 3 -4
-        let val = ((value / SCALE[mode] ) as i16).to_le_bytes();
-        cmd.push(val[0]);
-        cmd.push(val[1]);
-        //byte 5-9 for motor b and reserved
-        for _ in 0..5{
-            cmd.push(0x00);
+    //looks for one byte of the header, waits until it finds it
+    //Returns: bool - true once the header is found
+    fn find_header(&mut self) -> bool{
+        let mut temp_head: Vec<u8> = vec![0; 1];
+        //read next 2 bytes 
+        self.port.read_exact(&mut temp_head).expect("Read failed");
+        //wait for correct header
+        while temp_head != HEAD {
+            self.port.read_exact(&mut temp_head).expect("Read failed");
         }
-        //crc
-        let crc = Port::checksum(&cmd[..]).to_be_bytes();
-        cmd.push(crc[0]);
-        cmd.push(crc[1]);
+        true
+    }
 
-        let mut ret = [0;12];
-        ret.copy_from_slice(&cmd);
-        if !Self::verify_crc(&ret){log::error!("Checksum is not correct");return [0;12];}
-
-        ret
+    //reads the next byte from the serial port
+    //Returns: Vec<u8> - the byte read
+    fn next_byte(&mut self) -> Vec<u8> {
+        let mut byte: Vec<u8> = vec![0; 1];
+        self.port.read_exact(&mut byte).expect("Read failed");
+        byte
     }
 
     //creates a command which enables motor a, doesnt clear errors 
     //Arguments: mode: u16 - the mode to enable the motor in 
     //Arguments: value: f32 - the value of Amps if in current mode, or RPM if in velocity mode
-    //Returns: [u8;12] - the 12 byte command corresponding to your mode and value
+    //Returns: [u8;12] - the corresponding 12 byte command 
     pub fn create_command(mode: &str, value : f32)-> [u8;12]{
         let mut cmd = vec![0xF0,0xF0];
         //byte 2
         let mut com_mode = 0b00000001;
         let mut i = 0;
+
         match mode {
             "c" =>          com_mode = 0b00000001,
             "current" =>    com_mode = 0b00000001,
@@ -249,9 +287,9 @@ impl Port {
             "rpm" =>       {com_mode = 0b00001001; i = 1},
             "v" =>         {com_mode = 0b00001001; i = 1},
 
-            //"position" =>   com_mode = 0b00010001, dont use this 
             _ => log::error!("Invalid mode"),
         }
+
         cmd.push(com_mode as u8);
         //byte 3 -4
         let val = ((value / SCALE[i] ) as i16).to_le_bytes();
@@ -262,7 +300,7 @@ impl Port {
             cmd.push(0x00);
         }
         //crc
-        let crc = Port::checksum(&cmd[..]).to_be_bytes();
+        let crc = Controller::checksum(&cmd[..]).to_be_bytes();
         cmd.push(crc[0]);
         cmd.push(crc[1]);
 
@@ -273,14 +311,35 @@ impl Port {
         ret
     }
 
-    //self.feedback = ((((status_packet[2] as i16) << 8) | (status_packet[1] as i16) )as f32 )*  SCALE[self.mode as usize] as f32;
+    //checks if motor a is enabled
+    //Arguments: packet: u8 - the status packet byte 0
+    //Returns: bool - true if motor a is enabled, false otherwise
+    pub fn is_motor_enabled(packet: u8) -> bool{
+        if (packet & 0b00000001) ==1 { true }
+        else { false }
+    }
 
-    //a in tor : byte 2 = 00000001 = 0x01 - 1
-    //a in vel : byte 2 = 00001001 = 0x09 - 9 
-    //a in pos : byte 2 = 00010001 = 0x11 - 17
+    //TODO: what to do w the errors????
+    //checks the errors in the status packet
+    //Arguments: status: &[u8] - the status packet excluding the header
+    fn error_check(&self, status: &[u8]) {
+        //extract the errors in byte 5 & byte 0
+        let errs = status[5] & 0b01111111;
+        let other_errs = status[0]& 0b01110100;
 
-    //a in tor w clear errs : byte 2 = 00000101 = 0x05 - 5
+        for i in 0..8 {
+            if ((errs & (1<<i))>>i) == 1 {
+                log::error!("Error: {}", ERRORS[i]);
+            }
+            if ((other_errs & (1<<i))>>i) == 1 { //2-> 7 , 4-> 8, 5-> 9, 6-> 10
+                if i == 2 {
+                    log::error!("Error: {}", ERRORS[7]);
+                } else {
+                    log::error!("Error: {}", ERRORS[i+4]);
+                }
+            }
+        }
+    }
 
-
-
+ 
 }
