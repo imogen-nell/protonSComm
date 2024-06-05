@@ -215,13 +215,14 @@ impl Controller {
                 let check: bool = self.find_header();
                 if check {self.state = readstate::Header;}
                 else {self.state = readstate::Lost;}
+                self.change_state();
             }
             readstate::Header => {
                 //find second header byte
                 let byte = self.next_byte();
                 if byte == HEAD  {self.state = readstate::StatusPacket;}
                 else {self.state = readstate::Lost;}
-
+                self.change_state();
             }
             readstate::StatusPacket => {
                 //get status packet
@@ -229,6 +230,7 @@ impl Controller {
                 self.port.read_exact(&mut status_packet).expect("Read failed");
                 self.status = status_packet.try_into().unwrap();//as_slice();
                 self.state = readstate::Crc;
+                self.change_state();
             }
             readstate::Crc => {
                 //verify crc
@@ -236,6 +238,7 @@ impl Controller {
                 pack.extend(&self.status);
                 if Controller::verify_crc(&pack[..]) {self.state = readstate::Read;}
                 else {log::warn!("Checksum does not match, back to Lost"); self.state = readstate::Lost;}
+                self.change_state();
             }
             readstate::Read => {
                 //update feedback
