@@ -8,6 +8,7 @@ use cadh::threadsync::DualChannelSync;
 use serial::prelude::*;
 use crossbeam;
 use log::{info, warn, error};
+use csv::Writer;
 
 //frequency of commands being excecuted : 1/SLEEP = 200Hz
 const RATED_CURRENT     : f32 = 3.45; // [units] = A //change based on motor
@@ -69,9 +70,11 @@ pub struct Controller{
     feedback: f32,
     state: readstate,
     status: [u8; 10],
+    writer : Writer<std::fs::File>,
     //to add when the other packets are defined
     // 042C serialFeedbackEnable
     // 042D serialBaud
+
     // 042F serialFeedbackRate
     // 0430 serialChecksumErrorCOunt
     // 0431 serialPassCount
@@ -105,7 +108,8 @@ pub struct data{
 impl ControllerThread {
 
     pub fn spawn_feedback_thread(port_name: String, baud: u32) -> Result<Self> {
-
+        let mut wtr = Writer::from_path("commands1.csv")?;
+        wtr.write_record(&["Time", "Current Command"]);
         let handle = DualChannelSync::spawn(
 
             "Feedback Updater",
@@ -126,9 +130,10 @@ impl ControllerThread {
                         match cmd {
                             cmd::SetTorque(torque) => { ControllerThread::set_torque(&mut controller, torque);}
                             cmd::SetVelocity(velocity) => { ControllerThread::set_velocity(&mut controller, velocity);}
-                            cmd::SetCurrent(current) => { ControllerThread::set_current(&mut controller, current);}
+                            cmd::SetCurrent(current) => { ControllerThread::set_current(&mut wtr, &mut controller, current);}
                             cmd::DisableMotor() => { controller.port.write(DISABLE);}
                         }
+                        
                         //wait appropriate time
                         if (std::time::Instant::now())  > next_update {next_update = Instant::now() + interval ;}
                         sleep(next_update-Instant::now());
@@ -150,6 +155,7 @@ impl ControllerThread {
 
             Ok(ControllerThread {
                 inner: handle,
+                // wtr: wtr,
             })
     }
 
@@ -163,8 +169,12 @@ impl ControllerThread {
         controller.port.write(&Controller::create_command("velocity", velocity));
     }
 
-    fn set_current(controller: &mut Controller, current: f32) {
+    fn set_current(wtr: &mut Writer<std::fs::File>, controller: &mut Controller, current: f32) {
         controller.port.write(&Controller::create_command("current", current));
+        let time_now = Instant::now();
+        // wtr.write_record(&[time_now, current])?;
+        wtr.write_record(&[ format!("{:?}", time_now), current.to_string()]);
+        wtr.flush();
     }
 
 }
@@ -172,6 +182,9 @@ impl ControllerThread {
 impl Controller {
     //creates and opens serial port, return controller
     pub fn new(port_name: String, baud: u32) -> Result<Self> {
+        let mut writer = Writer::from_path("feedback1.csv")?;
+        writer.write_record(&["Time", "Feedback"])?;
+
         let ser_port = serialport::new(port_name, baud)
             .timeout(Duration::from_millis(1000))
             .open()?;
@@ -180,6 +193,7 @@ impl Controller {
             feedback: 0.0,
             state: readstate::Lost,
             status: [0; 10],
+            writer: writer,
         })
     }
      
@@ -244,7 +258,13 @@ impl Controller {
                 //update feedback
                 let mode = (self.status[0] & 0b00011000)>>3;
                 self.feedback = ((((self.status[2] as i16) << 8) | (self.status[1] as i16) )as f32 )*  SCALE[mode as usize] as f32;
+                let time_now = Instant::now();
+                if self.feedback > -1.55 && self.feedback < -0.5 || self.feedback > 1.25 && self.feedback < 1.6{
+                    self.writer.write_record(&[ format!("{:?}", time_now), self.feedback.to_string()]);
+                }
                 self.state = readstate::Lost;
+                self.writer.flush();
+
             }
         }
     }

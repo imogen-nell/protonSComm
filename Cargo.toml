@@ -13,3 +13,4 @@ simple_logger = "5.0.0"
 cadh = { git = "ssh://git@github.com/javerom/tlm.git" }
 cadh_builder = { git = "ssh://git@github.com/javerom/tlm.git" }
 crossbeam = "0.8"
+csv = "1.1"

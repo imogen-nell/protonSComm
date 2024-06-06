@@ -25,15 +25,13 @@ fn main() {
         
         my_controller.inner.try_send(cmd::SetCurrent(1.5));
         // my_controller.inner.try_send(cmd::DisableMotor());
-        sleep(Duration::from_millis(2000));
-        my_controller.inner.try_send(cmd::SetCurrent(-1.5));
-        println!("before : {:?}", my_controller.inner.try_iter().last());
         sleep(Duration::from_millis(3000));
-        println!("after  : {:?}", my_controller.inner.try_iter().last());
-
+        my_controller.inner.try_send(cmd::SetCurrent(-1.5));
+        // println!("before : {:?}", my_controller.inner.try_iter().last());
+        sleep(Duration::from_millis(3000));
     }
 }
 
 
 
-///todo : clean code, log, rate of respose
+//todo : clean code, log, rate of respose
