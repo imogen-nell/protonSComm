@@ -17,7 +17,6 @@ const HEADER            : [u8;2] = [0xF0, 0xF0];
 const HEAD              : [u8;1] = [0xF0];
 const C_SCALE           : f32 = 0.001; 
 const V_SCALE           : f32 = 1.0;
-const P_SCALE           : f32 = 0.0; //never use this 
 const SCALE             : [f32; 3] = [C_SCALE, V_SCALE, P_SCALE];
 const ERRORS            : [&str; 11] = [ "Over Current", 
 "Loss of Feedback", "Over Speed", "Motor Temp", "IGBTTemp", 
@@ -69,7 +68,7 @@ pub struct Controller{
     feedback: f32,
     state: readstate,
     status: [u8; 10],
-    //to add when the other packets are defined
+    //Require additional command packet: 
     // 042C serialFeedbackEnable
     // 042D serialBaud
     // 042F serialFeedbackRate
@@ -270,10 +269,10 @@ impl Controller {
         byte
     }
 
-    //creates a command which enables motor a, doesnt clear errors 
-    //Arguments: mode: u16 - the mode to enable the motor in 
+    //creates a command which enables motor a, doesnt clear errors, and commands the inputted behaviour
+    //Arguments: mode: u16 - the mode to enable the motor in (velocity: enter "v",current/torque: enter "c")
     //Arguments: value: f32 - the value of Amps if in current mode, or RPM if in velocity mode
-    //Returns: [u8;12] - the corresponding 12 byte command 
+    //Returns: [u8;12] - the corresponding 12 byte command for the motor
     pub fn create_command(mode: &str, value : f32)-> [u8;12]{
         let mut cmd = vec![0xF0,0xF0];
         //byte 2
@@ -284,7 +283,6 @@ impl Controller {
             "c" =>          com_mode = 0b00000001,
             "current" =>    com_mode = 0b00000001,
             "torque" =>     com_mode = 0b00000001,
-            "amps" =>       com_mode = 0b00000001,
 
             "velocity" =>  {com_mode = 0b00001001; i = 1},
             "rpm" =>       {com_mode = 0b00001001; i = 1},
@@ -322,9 +320,9 @@ impl Controller {
         else { false }
     }
 
-    //TODO: what to do w the errors????
-    //checks the errors in the status packet
+    //checks for errors in the status packet
     //Arguments: status: &[u8] - the status packet excluding the header
+    //Errors will be logged 
     fn error_check(&self, status: &[u8]) {
         //extract the errors in byte 5 & byte 0
         let errs = status[5] & 0b01111111;
