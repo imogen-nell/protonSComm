@@ -1,3 +1,3 @@
 # protonSComm
-This will be used to comunicate with proton motor controller from ESI motion over RS422
+ESI Motion proton motor controller, over RS422
 
